@@ -25,8 +25,11 @@ namespace HitTextTweaker
         private static readonly Dictionary<string, string> replacements =
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
+        // r150（2026-10-30 之后的 build）把原来的 Perfect 拆成了 PerfectMinus / XPerfect / PerfectPlus，
+        // 旧名 Perfect 在枚举里已经不存在，这里按新名列出；old config 里的 Perfect 由 MigrateLegacyPerfect() 自动摊过去
         private static readonly string[] Slots = {
-            "TooEarly", "VeryEarly", "EarlyPerfect", "Perfect", "LatePerfect", "VeryLate", "TooLate",
+            "TooEarly", "VeryEarly", "EarlyPerfect", "PerfectMinus", "XPerfect", "PerfectPlus",
+            "LatePerfect", "VeryLate", "TooLate",
             "FailMiss", "FailOverload", "Multipress", "OverPress"
         };
 
@@ -34,7 +37,9 @@ namespace HitTextTweaker
             "太快！！ (TooEarly)",
             "太快！ (VeryEarly)",
             "稍快！ (EarlyPerfect)",
-            "完美！ (Perfect)",
+            "稍快完美 (PerfectMinus)",
+            "完美！ (XPerfect)",
+            "稍慢完美 (PerfectPlus)",
             "稍慢！ (LatePerfect)",
             "太慢！ (VeryLate)",
             "太慢！！ (TooLate)",
@@ -79,6 +84,9 @@ namespace HitTextTweaker
         private static readonly Dictionary<string, bool> perChar =
             new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
 
+        // 每档第一次真正把字换掉时记一条日志，方便更新后一眼看出到底生效没有
+        private static readonly HashSet<string> appliedSlots = new HashSet<string>();
+
         // UMM 开关状态：关掉 mod 时 Harmony patch 仍然挂着，必须靠这两个标志跳过替换
         private static bool enabled = true;
         private static UnityModManager.ModEntry umiEntry;
@@ -88,6 +96,7 @@ namespace HitTextTweaker
             Log = modEntry.Logger;
             modDir = modEntry.Path;
             LoadConfig();
+            MigrateLegacyPerfect();
             EnsureGameColors();
 
             try
@@ -201,6 +210,8 @@ namespace HitTextTweaker
                 catch { }
 
                 tmp.text = want;
+                if (appliedSlots.Add(slot) && Log != null)
+                    Log.Log("文字替换已生效: " + slot + " -> " + want);
             }
             catch (Exception e)
             {
@@ -481,8 +492,9 @@ namespace HitTextTweaker
                 // 与 Slots 一一对应（OverPress 与游戏一致用 colourFail）
                 string[] fieldNames = {
                     "colourTooEarly", "colourVeryEarly", "colourLittleEarly", "colourPerfect",
-                    "colourLittleLate", "colourVeryLate", "colourTooLate", "colourFail",
-                    "colourFail", "colourMultipress", "colourFail"
+                    "colourXPerfect", "colourPerfect",
+                    "colourLittleLate", "colourVeryLate", "colourTooLate",
+                    "colourFail", "colourFail", "colourMultipress", "colourFail"
                 };
                 for (int i = 0; i < Slots.Length && i < fieldNames.Length; i++)
                 {
@@ -645,6 +657,34 @@ namespace HitTextTweaker
         {
             if (s == null) return "";
             return s.Replace("\\", "\\\\").Replace("\"", "\\\"");
+        }
+
+        // r150 之后的 build 把 Perfect 拆成 PerfectMinus / XPerfect / PerfectPlus：
+        // 老 config.json 里的 "Perfect" 自动摊到这三个档位，免得游戏一更新设置就悄悄失效
+        private static void MigrateLegacyPerfect()
+        {
+            string[] targets = { "PerfectMinus", "XPerfect", "PerfectPlus" };
+            bool any = MigrateLegacy(replacements, targets);
+            any |= MigrateLegacy(colors, targets);
+            any |= MigrateLegacy(gradients, targets);
+            any |= MigrateLegacy(gradientModes, targets);
+            any |= MigrateLegacy(perChar, targets);
+            if (any && Log != null)
+                Log.Log("旧配置里的 Perfect 已迁移到 PerfectMinus / XPerfect / PerfectPlus（点「保存」会写成新档位）");
+        }
+
+        private static bool MigrateLegacy<T>(Dictionary<string, T> dict, string[] targets)
+        {
+            T legacy;
+            if (!dict.TryGetValue("Perfect", out legacy)) return false;
+            bool any = false;
+            foreach (string t in targets)
+            {
+                if (dict.ContainsKey(t)) continue;
+                dict[t] = legacy;
+                any = true;
+            }
+            return any;
         }
 
         private static void LoadConfig()
