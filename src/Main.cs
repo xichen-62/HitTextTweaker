@@ -243,6 +243,17 @@ namespace HitTextTweaker
             return StripTags(tmp.text) == plain ? CombinedSlot : rawSlot;
         }
 
+        // 当前预设下游戏到底会不会显示这一档：不显示的行在面板里灰掉，免得白改
+        private static bool SlotActive(string slot)
+        {
+            int pv = GetPresetValue();
+            if (pv < 0) return true;             // 老版本没有预设，全都显示
+            if (slot == CombinedSlot) return pv == 0 || pv >= 3;
+            if (slot == "XPerfect") return pv == 1 || pv == 2 || pv == 3 || pv == 4;
+            if (slot == "PerfectMinus" || slot == "PerfectPlus") return pv == 1 || pv == 2 || pv == 5;
+            return true;
+        }
+
         private static bool IsPerfectSlot(string slot)
         {
             return slot == "PerfectMinus" || slot == "XPerfect" || slot == "PerfectPlus";
@@ -643,7 +654,7 @@ namespace HitTextTweaker
                 GUILayout.Space(6f);
 
                 GUILayout.BeginHorizontal();
-                GUILayout.Label("X完美判定文本", GUILayout.Width(170f));
+                GUILayout.Label("X完美判定文本", GUILayout.Width(130f));
                 int pv = GetPresetValue();
                 if (presetProp == null || pv < 0)
                 {
@@ -651,15 +662,15 @@ namespace HitTextTweaker
                 }
                 else
                 {
-                    if (GUILayout.Button("◀", GUILayout.Width(34f)))
+                    if (GUILayout.Button("◀", GUILayout.Width(30f)))
                         SetPresetValue((pv + PresetNames.Length - 1) % PresetNames.Length);
-                    GUILayout.Label(PresetNames[Mathf.Clamp(pv, 0, PresetNames.Length - 1)], GUILayout.Width(300f));
-                    if (GUILayout.Button("▶", GUILayout.Width(34f)))
+                    GUILayout.Label(PresetNames[Mathf.Clamp(pv, 0, PresetNames.Length - 1)], GUILayout.Width(200f));
+                    if (GUILayout.Button("▶", GUILayout.Width(30f)))
                         SetPresetValue((pv + 1) % PresetNames.Length);
                 }
+                GUILayout.FlexibleSpace();
                 GUILayout.EndHorizontal();
-                GUILayout.Label("跟游戏「设置」里的同名选项是同一个值：这里改游戏里也变，游戏里改这里也跟着变。");
-                GUILayout.Label("选合并类的预设时，三个完美档统一显示「完美！」，用下面「完美！合并时」那一行改它的字。");
+                GUILayout.Label("跟游戏「设置」里的同名选项是同一个值，两边同步。灰色行 = 当前预设不显示该档，改了也不会出现。");
                 GUILayout.Space(6f);
 
                 for (int i = 0; i < Slots.Length; i++)
@@ -667,6 +678,10 @@ namespace HitTextTweaker
                     string slot = Slots[i];
                     string current;
                     if (!replacements.TryGetValue(slot, out current)) current = "";
+
+                    bool active = SlotActive(slot);
+                    bool prevEnabled = GUI.enabled;
+                    if (!active) GUI.enabled = false;
 
                     GUILayout.BeginHorizontal();
                     GUILayout.Label(SlotLabels[i], GUILayout.Width(170f));
@@ -703,6 +718,7 @@ namespace HitTextTweaker
                     GUILayout.EndHorizontal();
 
                     if (open) DrawColorEditor(slot);
+                    GUI.enabled = prevEnabled;
                 }
 
                 GUILayout.Space(4f);
