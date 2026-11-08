@@ -130,6 +130,11 @@ namespace HitTextTweaker
         // 每档第一次真正把字换掉时记一条日志，方便更新后一眼看出到底生效没有
         private static readonly HashSet<string> appliedSlots = new HashSet<string>();
 
+        // 长文本适配：按游戏原本的字宽把字号缩下来，免得一长串字糊到隔壁判定上
+        private static bool autoFit = true;
+        private static readonly Dictionary<int, float> baseMainFont = new Dictionary<int, float>();
+        private static readonly Dictionary<int, float> baseBorderFont = new Dictionary<int, float>();
+
         // UMM 开关状态：关掉 mod 时 Harmony patch 仍然挂着，必须靠这两个标志跳过替换
         private static bool enabled = true;
         private static UnityModManager.ModEntry umiEntry;
@@ -320,6 +325,7 @@ namespace HitTextTweaker
                     var blank = textField.GetValue(instance) as TextMeshPro;
                     if (blank != null && blank.text != "") blank.text = "";
                     SyncBorder(instance, "");
+                    ApplyFontFit(instance, "", slot);
                     if (appliedSlots.Add(slot) && Log != null)
                         Log.Log("文字已清空（这一档不显示任何字）: " + slot);
                     return;
@@ -328,7 +334,7 @@ namespace HitTextTweaker
 
                 var tmp = textField.GetValue(instance) as TextMeshPro;
                 if (tmp == null) return;
-                if (tmp.text == want) { SyncBorder(instance, want); return; }
+                if (tmp.text == want) { SyncBorder(instance, want); ApplyFontFit(instance, want, slot); return; }
 
                 tmp.overflowMode = TextOverflowModes.Overflow;
                 try
@@ -346,6 +352,7 @@ namespace HitTextTweaker
 
                 tmp.text = want;
                 SyncBorder(instance, want);
+                ApplyFontFit(instance, want, slot);
                 if (appliedSlots.Add(slot) && Log != null)
                     Log.Log("文字替换已生效: " + slot + " -> " + want);
             }
@@ -366,6 +373,59 @@ namespace HitTextTweaker
                 if (border != null && border.text != want) border.text = want;
             }
             catch { }
+        }
+
+        // 基线字号只在第一次见到这个实例时记一次：scrHitTextMesh 是池化复用的，
+        // 字号会被我们自己改，所以不能每次从当前值反推。
+        private static float BaseFont(Dictionary<int, float> map, int key, TextMeshPro tmp)
+        {
+            float v;
+            if (map.TryGetValue(key, out v) && v > 0f) return v;
+            v = tmp.fontSize > 0f ? tmp.fontSize : 4f;
+            map[key] = v;
+            return v;
+        }
+
+        // 长文本适配：用 TextMeshPro 量一下「游戏原本的字」和「现在这串字」的宽度，
+        // 超宽就按比例缩字号（最低 30%），一长串字才不会横着糊到旁边那条判定上。
+        private static void ApplyFontFit(object instance, string want, string slot)
+        {
+            try
+            {
+                if (textField == null) return;
+                var tmp = textField.GetValue(instance) as TextMeshPro;
+                if (tmp == null) return;
+                TextMeshPro border = borderField != null ? borderField.GetValue(instance) as TextMeshPro : null;
+
+                int key = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(instance);
+                float baseMain = BaseFont(baseMainFont, key, tmp);
+                float baseBord = border != null ? BaseFont(baseBorderFont, key, border) : baseMain;
+
+                float scale = 1f;
+                if (autoFit && !string.IsNullOrEmpty(want))
+                {
+                    string plain = StripTags(want);
+                    string orig = StripTags(DefaultText(slot));
+                    if (plain.Length > 0 && orig.Length > 0)
+                    {
+                        float w0 = tmp.GetPreferredValues(orig).x;
+                        float w1 = tmp.GetPreferredValues(plain).x;
+                        if (w0 > 0.01f && w1 > w0) scale = Mathf.Max(0.3f, w0 / w1);
+                    }
+                }
+
+                float mainSize = baseMain * scale;
+                if (Mathf.Abs(tmp.fontSize - mainSize) > 0.01f) tmp.fontSize = mainSize;
+                if (border != null)
+                {
+                    float bordSize = baseBord * scale;
+                    if (Mathf.Abs(border.fontSize - bordSize) > 0.01f) border.fontSize = bordSize;
+                }
+            }
+            catch (Exception e)
+            {
+                if (Log != null) Log.Log("长文本适配失败: " + e.Message);
+            }
         }
 
         // 颜色覆盖：Init 里游戏按档位从 RDConstants.hitMarginColours 取色写进 lastColor，
@@ -784,6 +844,12 @@ namespace HitTextTweaker
                 GUILayout.FlexibleSpace();
                 GUILayout.EndHorizontal();
                 GUILayout.Label("跟游戏「设置」里的同名选项是同一个值，两边同步。灰色行 = 当前预设不显示该档，改了也不会出现。");
+
+                GUILayout.BeginHorizontal();
+                bool newFit = GUILayout.Toggle(autoFit, " 长文本自动缩字号（按游戏原文字宽等比缩小，最长缩到 30%）");
+                if (newFit != autoFit) autoFit = newFit;
+                GUILayout.FlexibleSpace();
+                GUILayout.EndHorizontal();
                 GUILayout.Space(6f);
 
                 for (int i = 0; i < Slots.Length; i++)
@@ -909,6 +975,7 @@ namespace HitTextTweaker
                     if (perChar.TryGetValue(Slots[i], out pc) && pc)
                         sb.Append("  \"GradPerChar_").Append(Slots[i]).Append("\": \"1\",\n");
                 }
+                sb.Append("  \"AutoFit\": \"").Append(autoFit ? "1" : "0").Append("\",\n");
                 sb.Append("  \"__comment\": \"档位留空不写，就是游戏原样\"\n}\n");
                 File.WriteAllText(path, sb.ToString(), new System.Text.UTF8Encoding(false));
                 Log.Log("已保存 config.json");
@@ -944,6 +1011,7 @@ namespace HitTextTweaker
                 bool pc;
                 if (perChar.TryGetValue(s, out pc) && pc) sb.Append('p').Append(';');
             }
+            sb.Append('A').Append(autoFit ? '1' : '0');
             return sb.ToString();
         }
 
@@ -1193,6 +1261,11 @@ namespace HitTextTweaker
                             }
                             if (ok2) gradStash[key.Substring(10)] = arr2;
                         }
+                        continue;
+                    }
+                    if (key.Equals("AutoFit", StringComparison.OrdinalIgnoreCase))
+                    {
+                        autoFit = val.Trim() != "0";
                         continue;
                     }
                     if (key.StartsWith("GradDir_", StringComparison.OrdinalIgnoreCase))
