@@ -132,8 +132,10 @@ namespace HitTextTweaker
 
         // 长文本适配：按游戏原本的字宽把字号缩下来，免得一长串字糊到隔壁判定上
         private static bool autoFit = true;
-        // 缩字号的下限：字再长也不低于这个比例（默认 60%，太小就看不清了）
-        private static float autoFitMin = 0.6f;
+        // 缩字号的下限：字再长也不低于这个比例。默认 100% = 不缩，保持游戏原字号；
+        // 往下拉才会为超长文本缩小，拉到多少就是「最少缩到多少」。
+        private static float autoFitMin = 1f;
+        private static readonly HashSet<string> fitLogged = new HashSet<string>();
         private static readonly Dictionary<int, float> baseMainFont = new Dictionary<int, float>();
         private static readonly Dictionary<int, float> baseBorderFont = new Dictionary<int, float>();
 
@@ -413,6 +415,13 @@ namespace HitTextTweaker
                         float w0 = tmp.GetPreferredValues(orig).x;
                         float w1 = tmp.GetPreferredValues(plain).x;
                         if (w0 > 0.01f && w1 > w0) scale = Mathf.Max(autoFitMin, Mathf.Min(1f, w0 / w1));
+                        if (scale < 0.999f && Log != null)
+                        {
+                            string lk = slot + "|" + Mathf.RoundToInt(scale * 100f);
+                            if (fitLogged.Add(lk))
+                                Log.Log("长文本适配: " + slot + " 原宽 " + w0.ToString("F1") + " 新宽 " + w1.ToString("F1")
+                                        + " -> 字号 " + Mathf.RoundToInt(scale * 100f) + "%");
+                        }
                     }
                 }
 
@@ -861,7 +870,7 @@ namespace HitTextTweaker
                     float snapped = Mathf.Round(pct / 5f) * 5f;
                     GUILayout.Label(Mathf.RoundToInt(snapped) + "%", GUILayout.Width(60f));
                     if (Mathf.Abs(snapped / 100f - autoFitMin) > 0.001f) autoFitMin = snapped / 100f;
-                    GUILayout.Label("（字再长也不低于这个比例，太小的字看着费劲就往上拉）");
+                    GUILayout.Label(autoFitMin >= 0.999f ? "（100% = 不缩，保持游戏原字号）" : "（超宽时最少缩到这个比例，往右拉回原字号）");
                     GUILayout.FlexibleSpace();
                     GUILayout.EndHorizontal();
                 }
