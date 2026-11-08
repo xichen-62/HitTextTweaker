@@ -65,6 +65,12 @@ namespace HitTextTweaker
         // 游戏设置「X完美判定文本」：Persistence.hitMarginPerfectText（静态属性，枚举类型）
         private static PropertyInfo presetProp;
         private static MethodInfo locGet;              // RDString.Get(string, Dictionary)
+
+        // 游戏设置界面：面板里改完预设后，顺手把「设置 → 玩法」里那一行也刷新，不然它会留旧文案
+        private static Type settingsMenuType;
+        private static MethodInfo updateSettingMethod;
+        private static PropertyInfo currentSettingsProp;
+        private static FieldInfo settingTypeField;
         private static string locPerfectPlain;         // 「完美！」的当前语言文本
 
         private static readonly string[] PresetNames = {
@@ -163,6 +169,18 @@ namespace HitTextTweaker
                     Log.Log("读取 X完美判定文本 设置失败: " + e.Message);
                 }
                 ResolveLocalization();
+
+                settingsMenuType = AccessTools.TypeByName("SettingsMenu");
+                if (settingsMenuType != null)
+                {
+                    updateSettingMethod = settingsMenuType.GetMethod("UpdateSetting",
+                        BindingFlags.Public | BindingFlags.Instance);
+                    currentSettingsProp = settingsMenuType.GetProperty("currentSettings",
+                        BindingFlags.Public | BindingFlags.Instance);
+                    Type psbType = AccessTools.TypeByName("PauseSettingButton");
+                    if (psbType != null)
+                        settingTypeField = psbType.GetField("type", BindingFlags.Public | BindingFlags.Instance);
+                }
 
                 var harmony = new Harmony("LittleBlueWhale.HitTextTweaker");
                 harmony.Patch(init, postfix: new HarmonyMethod(typeof(Main).GetMethod(
@@ -858,6 +876,7 @@ namespace HitTextTweaker
             try
             {
                 presetProp.SetValue(null, Enum.ToObject(presetProp.PropertyType, value));
+                SyncGameSettingsUI();
                 int now = GetPresetValue();
                 if (Log != null)
                     Log.Log("X完美判定文本 -> " + (now >= 0 && now < PresetNames.Length ? PresetNames[now] : "?"));
@@ -865,6 +884,39 @@ namespace HitTextTweaker
             catch (Exception e)
             {
                 if (Log != null) Log.Log("改 X完美判定文本 失败: " + e.Message);
+            }
+        }
+
+        // 设置界面动作 0 = 重新读一遍 Persistence 并刷新文字，等于游戏内自己点了一次
+        private static void SyncGameSettingsUI()
+        {
+            if (settingsMenuType == null || updateSettingMethod == null
+                || currentSettingsProp == null || settingTypeField == null) return;
+            try
+            {
+                UnityEngine.Object[] menus = Resources.FindObjectsOfTypeAll(settingsMenuType);
+                ParameterInfo[] pars = updateSettingMethod.GetParameters();
+                if (pars.Length != 2) return;
+                object refresh = Enum.ToObject(pars[1].ParameterType, 0);
+
+                foreach (UnityEngine.Object menu in menus)
+                {
+                    MonoBehaviour mb = menu as MonoBehaviour;
+                    if (mb == null || !mb.gameObject.activeInHierarchy) continue;
+                    System.Collections.IList list = currentSettingsProp.GetValue(menu) as System.Collections.IList;
+                    if (list == null) continue;
+                    foreach (object btn in list)
+                    {
+                        if (btn == null) continue;
+                        if (!"hitMarginPerfectText".Equals(settingTypeField.GetValue(btn) as string)) continue;
+                        updateSettingMethod.Invoke(menu, new object[] { btn, refresh });
+                        return;
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                if (Log != null) Log.Log("同步游戏设置界面失败: " + e.Message);
             }
         }
 
