@@ -421,6 +421,63 @@ namespace HitTextTweaker
             }
         }
 
+        // 色块预览：有渐变色就按渐变画（横/纵/四角），没有就画纯色
+        private static void DrawSlotPreview(Rect r, string slot)
+        {
+            Color old = GUI.color;
+            Color[] g;
+            bool hasGrad = gradients.TryGetValue(slot, out g) && g != null && g.Length == 4;
+            if (!hasGrad)
+            {
+                Color c;
+                if (!colors.TryGetValue(slot, out c)) c = OriginalColor(slot);
+                GUI.color = c;
+                GUI.DrawTexture(r, Texture2D.whiteTexture);
+                GUI.color = old;
+                return;
+            }
+
+            string mode;
+            gradientModes.TryGetValue(slot, out mode);
+            if (mode != "H" && mode != "V" && mode != "C") mode = "H";
+
+            const int N = 8;
+            if (mode == "C")
+            {
+                // 四角 = 双线性插值：v=0 是上边，v=1 是下边；g[0]/g[1] 左上/右上，g[2]/g[3] 左下/右下
+                float cw = Mathf.Ceil(r.width / N);
+                float ch = Mathf.Ceil(r.height / N);
+                for (int y = 0; y < N; y++)
+                {
+                    for (int x = 0; x < N; x++)
+                    {
+                        float u = (x + 0.5f) / N;
+                        float v = (y + 0.5f) / N;
+                        Color top = Color.Lerp(g[0], g[1], u);
+                        Color bottom = Color.Lerp(g[2], g[3], u);
+                        GUI.color = Color.Lerp(top, bottom, v);
+                        GUI.DrawTexture(new Rect(r.x + r.width * x / N, r.y + r.height * y / N, cw, ch),
+                            Texture2D.whiteTexture);
+                    }
+                }
+            }
+            else
+            {
+                bool horiz = mode == "H";
+                Color from = g[0];
+                Color to = horiz ? g[1] : g[2];
+                float w = Mathf.Ceil(r.width / N);
+                float h = Mathf.Ceil(r.height / N);
+                for (int k = 0; k < N; k++)
+                {
+                    GUI.color = Color.Lerp(from, to, k / (N - 1f));
+                    if (horiz) GUI.DrawTexture(new Rect(r.x + r.width * k / N, r.y, w, r.height), Texture2D.whiteTexture);
+                    else GUI.DrawTexture(new Rect(r.x, r.y + r.height * k / N, r.width, h), Texture2D.whiteTexture);
+                }
+            }
+            GUI.color = old;
+        }
+
         private static void DrawColorEditor(string slot)
         {
             Color c;
@@ -438,10 +495,7 @@ namespace HitTextTweaker
             GUILayout.BeginHorizontal();
             GUILayout.Label("预览:", GUILayout.Width(40f));
             Rect bar = GUILayoutUtility.GetRect(120f, 20f, GUILayout.Width(120f), GUILayout.Height(20f));
-            Color oldCol = GUI.color;
-            GUI.color = n;
-            GUI.DrawTexture(bar, Texture2D.whiteTexture);
-            GUI.color = oldCol;
+            DrawSlotPreview(bar, slot);
             GUILayout.EndHorizontal();
 
             if (GUILayout.Button("恢复游戏原色", GUILayout.Width(160f)))
@@ -728,13 +782,8 @@ namespace HitTextTweaker
                         else replacements[slot] = v;
                     }
 
-                    Color sw;
-                    if (!colors.TryGetValue(slot, out sw)) sw = OriginalColor(slot);
                     Rect swatch = GUILayoutUtility.GetRect(24f, 24f, GUILayout.Width(24f), GUILayout.Height(24f));
-                    Color oldCol = GUI.color;
-                    GUI.color = sw;
-                    GUI.DrawTexture(swatch, Texture2D.whiteTexture);
-                    GUI.color = oldCol;
+                    DrawSlotPreview(swatch, slot);
 
                     bool open;
                     colorOpen.TryGetValue(slot, out open);
