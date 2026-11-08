@@ -41,6 +41,7 @@ $refs = @(
     (Join-Path $managed 'UnityEngine.UI.dll'),
     (Join-Path $managed 'UnityEngine.IMGUIModule.dll'),
     (Join-Path $managed 'UnityEngine.TextCoreFontEngineModule.dll'),
+    (Join-Path $managed 'UnityEngine.ParticleSystemModule.dll'),
     (Join-Path $managed 'UnityModManager\UnityModManager.dll'),
     (Join-Path $managed 'UnityModManager\0Harmony.dll')
 )

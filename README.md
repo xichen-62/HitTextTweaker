@@ -82,6 +82,12 @@ dist/            发行包 zip
 
 ## 更新日志
 
+### v1.7.2（2026-11-08）
+
+- 修 1.7.1 的哑火：用 `object[] __args` 改 WithMinMaxConstant 的参数，日志照样打（字宽 2.59x），实际值没回写，画面一点没变
+- 改成前缀直接返回 false、自己给结果（原方法就两行：`curve.constantMin = min; curve.constantMax = max; return curve;`），不再依赖参数回写
+- 编译引用多了 `UnityEngine.ParticleSystemModule.dll`（MinMaxCurve 转发到这个程序集），build.ps1 已同步
+
 ### v1.7.1（2026-11-08）
 
 - 修「X 完美光效跟字不匹配」：游戏撒粒子的尺寸和扩散速度只按「判定文字大小」设置算，跟这一档写了多少字无关，长句就会字铺得很开、光效还挤在中间

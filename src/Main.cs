@@ -299,25 +299,30 @@ namespace HitTextTweaker
 
         // RDUtils.WithMinMaxConstant(curve, min, max) 在 Show 里被调四次：
         // 前两次是粒子 startSize（1×V ~ 2×V），后两次是扩散速度（±3.5×V）。
-        public static void MinMaxPrefix(object[] __args)
+        // 原方法就两行：curve.constantMin = min; curve.constantMax = max; return curve;
+        // 这里直接返回 false 自己给结果 —— 1.7.1 用 object[] __args 改参数，日志打了但值没真正传回去，
+        // 画面一点没变，所以改成短路重实现，不再赌 Harmony 的参数回写。
+        public static bool MinMaxPrefix(UnityEngine.ParticleSystem.MinMaxCurve curve, float min, float max, ref UnityEngine.ParticleSystem.MinMaxCurve __result)
         {
-            if (glowInstance == null || !enabled) return;
-            if (__args == null || __args.Length < 3) return;
+            if (glowInstance == null || !enabled) return true;
             int idx = glowCall++;
             float ratio = GlowRatio();
-            if (ratio <= 1.001f) return;
+            if (ratio <= 1.001f) return true;
             float sizeFactor = Mathf.Sqrt(ratio);
             float factor = idx < 2 ? sizeFactor : ratio;
             try
             {
-                __args[1] = Convert.ToSingle(__args[1]) * factor;
-                __args[2] = Convert.ToSingle(__args[2]) * factor;
+                curve.constantMin = min * factor;
+                curve.constantMax = max * factor;
+                __result = curve;
                 string lk = idx + "|" + Mathf.RoundToInt(ratio * 10f);
                 if (glowLogged.Add(lk) && Log != null)
                     Log.Log("X完美光效补偿: 字宽 " + ratio.ToString("F2") + "x -> 粒子尺寸 x"
-                            + sizeFactor.ToString("F2") + "，扩散 x" + ratio.ToString("F2"));
+                            + sizeFactor.ToString("F2") + "，扩散 x" + ratio.ToString("F2")
+                            + "（次数 " + glowCall + "）");
             }
-            catch { }
+            catch { return true; }
+            return false;
         }
 
         // 这一档最终会显示多宽（跟 ApplyFontFit 缩完之后的宽度对齐），比游戏原字宽大多少倍
