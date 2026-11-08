@@ -114,6 +114,11 @@ namespace HitTextTweaker
         private static readonly Dictionary<string, string> gradientModes =
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
+        // 关掉渐变色时把原来的四角颜色缓存在这里，重新开启就还原，而不是退回纯色
+        private static readonly Dictionary<string, Color[]> gradStash =
+            new Dictionary<string, Color[]>(StringComparer.OrdinalIgnoreCase);
+        private static bool pendingSave = false;
+
         // 渐变颜色块是否展开 RGBA 滑条（key = slot#idx）
         private static readonly Dictionary<string, bool> gradOpen =
             new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
@@ -509,11 +514,19 @@ namespace HitTextTweaker
             GUILayout.Space(3f);
             if (GUILayout.Button(hasGrad ? "关闭渐变色" : "开启渐变色", GUILayout.Width(160f)))
             {
-                if (hasGrad) { gradients.Remove(slot); gradientModes.Remove(slot); }
+                if (hasGrad)
+                {
+                    // 关闭只是停用，把四角颜色存起来（同时写进 config），下次开启原样还原
+                    gradStash[slot] = new Color[] { g[0], g[1], g[2], g[3] };
+                    gradients.Remove(slot);
+                }
                 else
                 {
-                    Color c0 = hasGrad ? g[0] : c;
-                    gradients[slot] = new Color[] { c0, c0, c0, c0 };
+                    Color[] seed;
+                    if (gradStash.TryGetValue(slot, out seed) && seed != null && seed.Length == 4)
+                        gradients[slot] = new Color[] { seed[0], seed[1], seed[2], seed[3] };
+                    else
+                        gradients[slot] = new Color[] { c, c, c, c };
                 }
                 SaveConfig();
             }
@@ -738,7 +751,8 @@ namespace HitTextTweaker
         {
             try
             {
-                GUILayout.Label("判定文字：改完立即生效（下一次判定就变），点「保存」写入 config.json，重启后保持。");
+                string sigBefore = ConfigSignature();
+                GUILayout.Label("判定文字：改完立即生效（下一次判定就变），改完自动写入 config.json，重启后保持。");
                 GUILayout.Label("文字框留空 = 该档位保持游戏原样；点「调色」展开 RGB(A) 滑条（0.00~1.00），默认值 = 游戏原色，想要纯白就填 1/1/1/1。");
                 GUILayout.Space(6f);
 
@@ -809,6 +823,15 @@ namespace HitTextTweaker
                 GUILayout.BeginHorizontal();
                 if (GUILayout.Button("保存", GUILayout.Width(110f))) SaveConfig();
                 GUILayout.EndHorizontal();
+
+                // 滑条/输入框改完松手就落盘，不点「保存」也不会丢
+                if (ConfigSignature() != sigBefore) pendingSave = true;
+                if (pendingSave && Event.current != null
+                    && (Event.current.type == EventType.MouseUp || Event.current.type == EventType.KeyUp))
+                {
+                    SaveConfig();
+                    pendingSave = false;
+                }
             }
             catch (Exception e)
             {
@@ -845,6 +868,22 @@ namespace HitTextTweaker
                       .Append(ColorUtility.ToHtmlStringRGBA(g[1])).Append(",")
                       .Append(ColorUtility.ToHtmlStringRGBA(g[2])).Append(",")
                       .Append(ColorUtility.ToHtmlStringRGBA(g[3])).Append("\",\n");
+                }
+                // 关掉渐变后的缓存颜色也写进去，重新开启时还原
+                for (int i = 0; i < Slots.Length; i++)
+                {
+                    Color[] st;
+                    if (!gradStash.TryGetValue(Slots[i], out st) || st == null || st.Length != 4) continue;
+                    if (gradients.ContainsKey(Slots[i])) continue;
+                    sb.Append("  \"GradStash_").Append(Slots[i]).Append("\": \"")
+                      .Append(ColorUtility.ToHtmlStringRGBA(st[0])).Append(",")
+                      .Append(ColorUtility.ToHtmlStringRGBA(st[1])).Append(",")
+                      .Append(ColorUtility.ToHtmlStringRGBA(st[2])).Append(",")
+                      .Append(ColorUtility.ToHtmlStringRGBA(st[3])).Append("\",\n");
+                }
+                // 方向 / 整体渐变开关跟渐变颜色分开存：关掉渐变色时也保留，重开直接沿用
+                for (int i = 0; i < Slots.Length; i++)
+                {
                     string gm;
                     if (gradientModes.TryGetValue(Slots[i], out gm) && !string.IsNullOrEmpty(gm))
                         sb.Append("  \"GradDir_").Append(Slots[i]).Append("\": \"").Append(gm).Append("\",\n");
@@ -860,6 +899,34 @@ namespace HitTextTweaker
             {
                 Log.Log("保存失败: " + e.Message);
             }
+        }
+
+        // 面板内容指纹：用来判断这一帧有没有改过东西（改了才在松手时落盘）
+        private static string ConfigSignature()
+        {
+            var sb = new System.Text.StringBuilder();
+            for (int i = 0; i < Slots.Length; i++)
+            {
+                string s = Slots[i];
+                string v;
+                if (replacements.TryGetValue(s, out v)) sb.Append(s).Append('=').Append(v).Append(';');
+                Color c;
+                if (colors.TryGetValue(s, out c)) sb.Append('c').Append(ColorUtility.ToHtmlStringRGBA(c)).Append(';');
+                Color[] g;
+                if (gradients.TryGetValue(s, out g) && g != null && g.Length == 4)
+                    sb.Append('g').Append(ColorUtility.ToHtmlStringRGBA(g[0]))
+                      .Append(ColorUtility.ToHtmlStringRGBA(g[1]))
+                      .Append(ColorUtility.ToHtmlStringRGBA(g[2]))
+                      .Append(ColorUtility.ToHtmlStringRGBA(g[3])).Append(';');
+                Color[] st;
+                if (gradStash.TryGetValue(s, out st) && st != null && st.Length == 4)
+                    sb.Append('s').Append(ColorUtility.ToHtmlStringRGBA(st[0])).Append(';');
+                string m;
+                if (gradientModes.TryGetValue(s, out m)) sb.Append('m').Append(m).Append(';');
+                bool pc;
+                if (perChar.TryGetValue(s, out pc) && pc) sb.Append('p').Append(';');
+            }
+            return sb.ToString();
         }
 
         private static string JsonEscape(string s)
@@ -1056,6 +1123,21 @@ namespace HitTextTweaker
                                 if (!TryParseColor(parts[k], out arr[k])) { ok = false; break; }
                             }
                             if (ok) gradients[key.Substring(5)] = arr;
+                        }
+                        continue;
+                    }
+                    if (key.StartsWith("GradStash_", StringComparison.OrdinalIgnoreCase))
+                    {
+                        string[] parts2 = val.Split(',');
+                        if (parts2.Length == 4)
+                        {
+                            var arr2 = new Color[4];
+                            bool ok2 = true;
+                            for (int k = 0; k < 4; k++)
+                            {
+                                if (!TryParseColor(parts2[k], out arr2[k])) { ok2 = false; break; }
+                            }
+                            if (ok2) gradStash[key.Substring(10)] = arr2;
                         }
                         continue;
                     }
