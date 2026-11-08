@@ -132,6 +132,8 @@ namespace HitTextTweaker
 
         // 长文本适配：按游戏原本的字宽把字号缩下来，免得一长串字糊到隔壁判定上
         private static bool autoFit = true;
+        // 缩字号的下限：字再长也不低于这个比例（默认 60%，太小就看不清了）
+        private static float autoFitMin = 0.6f;
         private static readonly Dictionary<int, float> baseMainFont = new Dictionary<int, float>();
         private static readonly Dictionary<int, float> baseBorderFont = new Dictionary<int, float>();
 
@@ -410,7 +412,7 @@ namespace HitTextTweaker
                     {
                         float w0 = tmp.GetPreferredValues(orig).x;
                         float w1 = tmp.GetPreferredValues(plain).x;
-                        if (w0 > 0.01f && w1 > w0) scale = Mathf.Max(0.3f, w0 / w1);
+                        if (w0 > 0.01f && w1 > w0) scale = Mathf.Max(autoFitMin, Mathf.Min(1f, w0 / w1));
                     }
                 }
 
@@ -846,10 +848,23 @@ namespace HitTextTweaker
                 GUILayout.Label("跟游戏「设置」里的同名选项是同一个值，两边同步。灰色行 = 当前预设不显示该档，改了也不会出现。");
 
                 GUILayout.BeginHorizontal();
-                bool newFit = GUILayout.Toggle(autoFit, " 长文本自动缩字号（按游戏原文字宽等比缩小，最长缩到 30%）");
+                bool newFit = GUILayout.Toggle(autoFit, " 长文本自动缩字号（超宽时按比例缩，缩到刚好等于游戏原文字宽）");
                 if (newFit != autoFit) autoFit = newFit;
                 GUILayout.FlexibleSpace();
                 GUILayout.EndHorizontal();
+
+                if (autoFit)
+                {
+                    GUILayout.BeginHorizontal();
+                    GUILayout.Label("长文本最小字号", GUILayout.Width(160f));
+                    float pct = GUILayout.HorizontalSlider(autoFitMin * 100f, 30f, 100f, GUILayout.Width(220f));
+                    float snapped = Mathf.Round(pct / 5f) * 5f;
+                    GUILayout.Label(Mathf.RoundToInt(snapped) + "%", GUILayout.Width(60f));
+                    if (Mathf.Abs(snapped / 100f - autoFitMin) > 0.001f) autoFitMin = snapped / 100f;
+                    GUILayout.Label("（字再长也不低于这个比例，太小的字看着费劲就往上拉）");
+                    GUILayout.FlexibleSpace();
+                    GUILayout.EndHorizontal();
+                }
                 GUILayout.Space(6f);
 
                 for (int i = 0; i < Slots.Length; i++)
@@ -976,6 +991,7 @@ namespace HitTextTweaker
                         sb.Append("  \"GradPerChar_").Append(Slots[i]).Append("\": \"1\",\n");
                 }
                 sb.Append("  \"AutoFit\": \"").Append(autoFit ? "1" : "0").Append("\",\n");
+                sb.Append("  \"AutoFitMin\": \"").Append(Mathf.RoundToInt(autoFitMin * 100f)).Append("\",\n");
                 sb.Append("  \"__comment\": \"档位留空不写，就是游戏原样\"\n}\n");
                 File.WriteAllText(path, sb.ToString(), new System.Text.UTF8Encoding(false));
                 Log.Log("已保存 config.json");
@@ -1011,7 +1027,7 @@ namespace HitTextTweaker
                 bool pc;
                 if (perChar.TryGetValue(s, out pc) && pc) sb.Append('p').Append(';');
             }
-            sb.Append('A').Append(autoFit ? '1' : '0');
+            sb.Append('A').Append(autoFit ? '1' : '0').Append(Mathf.RoundToInt(autoFitMin * 100f)).Append(';');
             return sb.ToString();
         }
 
@@ -1266,6 +1282,12 @@ namespace HitTextTweaker
                     if (key.Equals("AutoFit", StringComparison.OrdinalIgnoreCase))
                     {
                         autoFit = val.Trim() != "0";
+                        continue;
+                    }
+                    if (key.Equals("AutoFitMin", StringComparison.OrdinalIgnoreCase))
+                    {
+                        int pct;
+                        if (int.TryParse(val.Trim(), out pct)) autoFitMin = Mathf.Clamp(pct, 30, 100) / 100f;
                         continue;
                     }
                     if (key.StartsWith("GradDir_", StringComparison.OrdinalIgnoreCase))
