@@ -132,9 +132,9 @@ namespace HitTextTweaker
 
         // 长文本适配：按游戏原本的字宽把字号缩下来，免得一长串字糊到隔壁判定上
         private static bool autoFit = true;
-        // 缩字号的下限：字再长也不低于这个比例。默认 100% = 不缩，保持游戏原字号；
-        // 往下拉才会为超长文本缩小，拉到多少就是「最少缩到多少」。
-        private static float autoFitMin = 1f;
+        // 长文本最多能占多宽（相对游戏原文字宽的倍数）。1.0 = 完全不许超出原宽（缩得最狠），
+        // 4.0 = 基本不缩（会压到隔壁格子）。默认 3.0：只把特别夸张的长句压回来一点。
+        private static float autoFitWidth = 3f;
         private static readonly HashSet<string> fitLogged = new HashSet<string>();
         private static readonly Dictionary<int, float> baseMainFont = new Dictionary<int, float>();
         private static readonly Dictionary<int, float> baseBorderFont = new Dictionary<int, float>();
@@ -414,7 +414,8 @@ namespace HitTextTweaker
                     {
                         float w0 = tmp.GetPreferredValues(orig).x;
                         float w1 = tmp.GetPreferredValues(plain).x;
-                        if (w0 > 0.01f && w1 > w0) scale = Mathf.Max(autoFitMin, Mathf.Min(1f, w0 / w1));
+                        float targetW = w0 * autoFitWidth;
+                        if (targetW > 0.01f && w1 > targetW) scale = Mathf.Max(0.3f, targetW / w1);
                         if (scale < 0.999f && Log != null)
                         {
                             string lk = slot + "|" + Mathf.RoundToInt(scale * 100f);
@@ -857,7 +858,7 @@ namespace HitTextTweaker
                 GUILayout.Label("跟游戏「设置」里的同名选项是同一个值，两边同步。灰色行 = 当前预设不显示该档，改了也不会出现。");
 
                 GUILayout.BeginHorizontal();
-                bool newFit = GUILayout.Toggle(autoFit, " 长文本自动缩字号（超宽时按比例缩，缩到刚好等于游戏原文字宽）");
+                bool newFit = GUILayout.Toggle(autoFit, " 长文本自动缩字号（太长就缩一点，最多占下面设定的宽度）");
                 if (newFit != autoFit) autoFit = newFit;
                 GUILayout.FlexibleSpace();
                 GUILayout.EndHorizontal();
@@ -865,12 +866,12 @@ namespace HitTextTweaker
                 if (autoFit)
                 {
                     GUILayout.BeginHorizontal();
-                    GUILayout.Label("长文本最小字号", GUILayout.Width(160f));
-                    float pct = GUILayout.HorizontalSlider(autoFitMin * 100f, 30f, 100f, GUILayout.Width(220f));
-                    float snapped = Mathf.Round(pct / 5f) * 5f;
-                    GUILayout.Label(Mathf.RoundToInt(snapped) + "%", GUILayout.Width(60f));
-                    if (Mathf.Abs(snapped / 100f - autoFitMin) > 0.001f) autoFitMin = snapped / 100f;
-                    GUILayout.Label(autoFitMin >= 0.999f ? "（100% = 不缩，保持游戏原字号）" : "（超宽时最少缩到这个比例，往右拉回原字号）");
+                    GUILayout.Label("长文本最多占", GUILayout.Width(160f));
+                    float mul = GUILayout.HorizontalSlider(autoFitWidth, 1f, 4f, GUILayout.Width(220f));
+                    float snapped = Mathf.Round(mul * 4f) / 4f;
+                    GUILayout.Label(snapped.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture) + "× 原宽", GUILayout.Width(80f));
+                    if (Mathf.Abs(snapped - autoFitWidth) > 0.001f) autoFitWidth = snapped;
+                    GUILayout.Label("1× = 完全不越界（缩得最狠）｜4× = 几乎不缩（会压隔壁）");
                     GUILayout.FlexibleSpace();
                     GUILayout.EndHorizontal();
                 }
@@ -1000,7 +1001,7 @@ namespace HitTextTweaker
                         sb.Append("  \"GradPerChar_").Append(Slots[i]).Append("\": \"1\",\n");
                 }
                 sb.Append("  \"AutoFit\": \"").Append(autoFit ? "1" : "0").Append("\",\n");
-                sb.Append("  \"AutoFitMin\": \"").Append(Mathf.RoundToInt(autoFitMin * 100f)).Append("\",\n");
+                sb.Append("  \"AutoFitWidth\": \"").Append(autoFitWidth.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)).Append("\",\n");
                 sb.Append("  \"__comment\": \"档位留空不写，就是游戏原样\"\n}\n");
                 File.WriteAllText(path, sb.ToString(), new System.Text.UTF8Encoding(false));
                 Log.Log("已保存 config.json");
@@ -1036,7 +1037,7 @@ namespace HitTextTweaker
                 bool pc;
                 if (perChar.TryGetValue(s, out pc) && pc) sb.Append('p').Append(';');
             }
-            sb.Append('A').Append(autoFit ? '1' : '0').Append(Mathf.RoundToInt(autoFitMin * 100f)).Append(';');
+            sb.Append('A').Append(autoFit ? '1' : '0').Append(autoFitWidth.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)).Append(';');
             return sb.ToString();
         }
 
@@ -1293,10 +1294,12 @@ namespace HitTextTweaker
                         autoFit = val.Trim() != "0";
                         continue;
                     }
-                    if (key.Equals("AutoFitMin", StringComparison.OrdinalIgnoreCase))
+                    if (key.Equals("AutoFitWidth", StringComparison.OrdinalIgnoreCase))
                     {
-                        int pct;
-                        if (int.TryParse(val.Trim(), out pct)) autoFitMin = Mathf.Clamp(pct, 30, 100) / 100f;
+                        float mul;
+                        if (float.TryParse(val.Trim(), System.Globalization.NumberStyles.Float,
+                                           System.Globalization.CultureInfo.InvariantCulture, out mul))
+                            autoFitWidth = Mathf.Clamp(mul, 1f, 4f);
                         continue;
                     }
                     if (key.StartsWith("GradDir_", StringComparison.OrdinalIgnoreCase))
