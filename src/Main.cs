@@ -819,7 +819,7 @@ namespace HitTextTweaker
                         colorOpen[slot] = !open;
                         open = !open;
                     }
-                    if (GUILayout.Button("恢复默认", GUILayout.Width(72f)))
+                    if (GUILayout.Button("恢复默认", GUILayout.Width(92f)))
                     {
                         replacements.Remove(slot);
                         colors.Remove(slot);
