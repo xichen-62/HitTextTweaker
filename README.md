@@ -6,7 +6,8 @@
 
 ## 功能
 
-- 13 个判定档位逐个自定义文字（留空 = 保持游戏原样；r150 起完美拆成速快 / 完美 / 稍慢三档）
+- 14 个判定档位逐个自定义文字（留空 = 保持游戏原样；r150 起完美拆成稍快 / X完美 / 稍慢三档，另加一档「完美！合并时」）
+- 面板里直接切换游戏的「X完美判定文本」设置（仅完美 / X完美与-完美！+ / X完美（无粒子）与-完美！+ / X完美 / X完美（无粒子） / -完美！+），跟游戏设置菜单是同一个值
 - 改完立即生效，不用重启游戏
 - 关卡编辑器里试玩同样实时生效，不用重开谱子
 - 每档独立颜色：RGBA 滑条调色，默认显示游戏原色
@@ -46,30 +47,46 @@
   - 开 + 横向 = 整段文字从左到右渐变
   - 开 + 纵向/四角 = 自动退回每个字内部渐变（单行文字没法按行上下铺）
 
+### 「X完美判定文本」怎么办
+
+游戏 r150 之后在设置里有一个「X完美判定文本」，决定三个完美档怎么显示。本 mod 面板顶部有同名一行，◀ / ▶ 直接改游戏这个设置，改完游戏设置菜单里同步变化。
+
+选「仅完美」这类会把三档合并成同一条「完美！」的预设时，本 mod 统一用「完美！合并时 (PerfectCombined)」那一行的文字和配色；老 config.json 里没有这一档，会自动从 XPerfect 拷一份。
+
 ## 从源码构建
 
 需要：
 
-- Windows PowerShell 5.1（不要用 pwsh 7，`Add-Type` 会报 CS1069）
+- .NET SDK（有 `dotnet` 即可，`dotnet --list-sdks` 能看到版本）
 - 游戏安装目录（用于引用游戏自带的 Unity 程序集）
+
+> 编译走 SDK 自带的 Roslyn `csc`（`-nostdlib+` + 游戏 `Managed` 里的 mscorlib/netstandard）。不要用 `Add-Type`：Unity 这套程序集会先报 CS0012（缺 mscorlib），补上引用又报 CS8021（No value for RuntimeMetadataVersion），两条路都走不通。
 
 ```powershell
 .\build.ps1 -GameDir "D:\steam\steamapps\common\A Dance of Fire and Ice"
 ```
 
-脚本会读取 `src\Main.cs`，引用游戏 `_Data\Managed` 里的程序集（UnityEngine、TextMeshPro、UnityModManager、0Harmony 等），编译到 `out\HitTextTweaker.dll`。
+脚本会读取 `src\Main.cs`，引用游戏 `_Data\Managed` 里的程序集（mscorlib、netstandard、UnityEngine、TextMeshPro、UnityModManager、0Harmony 等），编译到 `out\HitTextTweaker.dll`。
 
 也可以设置环境变量 `ADOFAI_DIR` 指向游戏目录，然后直接运行 `.\build.ps1`。
 
 ## 项目结构
 
 ```
-build.ps1        编译脚本（PowerShell 5.1）
+build.ps1        编译脚本（需 .NET SDK，走 Roslyn csc）
 src/Main.cs      mod 源码（Harmony patch + UMM 设置界面）
 dist/            发行包 zip
 ```
 
 ## 更新日志
+
+### v1.6.0（2026-11-08）
+
+- 新增面板按钮「X完美判定文本」：直接读写游戏的同名设置，六档预设（仅完美 / X完美与-完美！+ / X完美（无粒子）与-完美！+ / X完美 / X完美（无粒子） / -完美！+）当场切换
+- 新增档位「完美！合并时 (PerfectCombined)」：预设把三个完美档合并成「完美！」时用这一档的字，不再被压成统一白字；老配置自动从 XPerfect 复制一份
+- 换字逻辑改为按游戏实际渲染的文字判断是否处于合并态（不硬算预设），合作模式等不合并的场合不会被误判
+- X 完美的描边层（xPerfectBorder）同步换字，不再露出旧文案
+- 构建脚本改用 .NET SDK 的 Roslyn csc 编译，修掉 pwsh 7 下 Add-Type 的 CS0012 / CS8021
 
 ### v1.5.6（2026-11-01）
 

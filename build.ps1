@@ -1,4 +1,4 @@
-﻿param(
+param(
     [string]$GameDir = '',
     [string]$OutDir = ''
 )
@@ -31,7 +31,10 @@ $dll = Join-Path $OutDir 'HitTextTweaker.dll'
 if (Test-Path $dll) { Remove-Item $dll -Force }
 
 $refs = @(
+    (Join-Path $managed 'mscorlib.dll'),
     (Join-Path $managed 'netstandard.dll'),
+    (Join-Path $managed 'System.dll'),
+    (Join-Path $managed 'System.Core.dll'),
     (Join-Path $managed 'UnityEngine.dll'),
     (Join-Path $managed 'UnityEngine.CoreModule.dll'),
     (Join-Path $managed 'Unity.TextMeshPro.dll'),
@@ -45,5 +48,28 @@ foreach ($r in $refs) {
     if (-not (Test-Path $r)) { throw "缺少程序集: $r" }
 }
 
-Add-Type -TypeDefinition $src -ReferencedAssemblies $refs -OutputAssembly $dll -OutputType Library
+# 编译用 .NET SDK 自带的 Roslyn csc。
+# 不用 Add-Type：Unity 那一套程序集会让它先报 CS0012（缺 mscorlib），补上 mscorlib 又报 CS8021
+# （No value for RuntimeMetadataVersion），2026-11-08 在 r150 上实测两条路都走不通。
+$csc = $null
+$sdkRoot = Join-Path $env:ProgramFiles 'dotnet\sdk'
+if (Test-Path $sdkRoot) {
+    $csc = Get-ChildItem $sdkRoot -Directory |
+        Where-Object { $_.Name -match '^\d+\.\d+\.\d+' } |
+        Sort-Object { [version]($_.Name -replace '^([0-9.]+).*$','$1') } -Descending |
+        ForEach-Object { Join-Path $_.FullName 'Roslyn\bincore\csc.dll' } |
+        Where-Object { Test-Path $_ } |
+        Select-Object -First 1
+}
+
+if ($csc) {
+    $cscArgs = @('-nologo', '-target:library', '-nostdlib+', '-langversion:latest', '-nowarn:1701,1702', "-out:$dll")
+    foreach ($r in $refs) { $cscArgs += "-r:$r" }
+    $cscArgs += (Join-Path $PSScriptRoot 'src\Main.cs')
+    & dotnet exec $csc @cscArgs
+    if ($LASTEXITCODE -ne 0) { throw "csc 编译失败（exit $LASTEXITCODE）" }
+}
+else {
+    throw '找不到 .NET SDK 里的 Roslyn csc，请先安装 .NET SDK（dotnet --list-sdks 有输出即可）'
+}
 Write-Host ("compiled: " + $dll + " size=" + (Get-Item $dll).Length)

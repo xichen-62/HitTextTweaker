@@ -27,8 +27,13 @@ namespace HitTextTweaker
 
         // r150（2026-10-30 之后的 build）把原来的 Perfect 拆成了 PerfectMinus / XPerfect / PerfectPlus，
         // 旧名 Perfect 在枚举里已经不存在，这里按新名列出；old config 里的 Perfect 由 MigrateLegacyPerfect() 自动摊过去
+        // r150 之后游戏又加了「X完美判定文本」预设：选「仅完美」时三个完美档会被合并成同一条「完美！」，
+        // 这时改用 PerfectCombined 这一档的文字（老配置里没有就自动从 XPerfect 拷一份）
+        private const string CombinedSlot = "PerfectCombined";
+
         private static readonly string[] Slots = {
             "TooEarly", "VeryEarly", "EarlyPerfect", "PerfectMinus", "XPerfect", "PerfectPlus",
+            CombinedSlot,
             "LatePerfect", "VeryLate", "TooLate",
             "FailMiss", "FailOverload", "Multipress", "OverPress"
         };
@@ -37,9 +42,10 @@ namespace HitTextTweaker
             "太快！！ (TooEarly)",
             "太快！ (VeryEarly)",
             "稍快！ (EarlyPerfect)",
-            "稍快完美 (PerfectMinus)",
-            "完美！ (XPerfect)",
-            "稍慢完美 (PerfectPlus)",
+            "稍快完美 -完美！ (PerfectMinus)",
+            "X完美！ (XPerfect)",
+            "稍慢完美 完美！+ (PerfectPlus)",
+            "完美！合并时 (PerfectCombined)",
             "稍慢！ (LatePerfect)",
             "太慢！ (VeryLate)",
             "太慢！！ (TooLate)",
@@ -54,6 +60,21 @@ namespace HitTextTweaker
         private static FieldInfo marginField;
         private static FieldInfo textField;
         private static FieldInfo lastColorField;
+        private static FieldInfo borderField;          // scrHitTextMesh.xPerfectBorder（X 完美的描边层）
+
+        // 游戏设置「X完美判定文本」：Persistence.hitMarginPerfectText（静态属性，枚举类型）
+        private static PropertyInfo presetProp;
+        private static MethodInfo locGet;              // RDString.Get(string, Dictionary)
+        private static string locPerfectPlain;         // 「完美！」的当前语言文本
+
+        private static readonly string[] PresetNames = {
+            "仅完美",
+            "X完美与-完美！+",
+            "X完美（无粒子）与-完美！+",
+            "X完美",
+            "X完美（无粒子）",
+            "-完美！+"
+        };
 
         // 每档判定文字的颜色（留空 = 游戏原色）
         private static readonly Dictionary<string, Color> colors =
@@ -97,6 +118,7 @@ namespace HitTextTweaker
             modDir = modEntry.Path;
             LoadConfig();
             MigrateLegacyPerfect();
+            MigrateCombinedPerfect();
             EnsureGameColors();
 
             try
@@ -125,7 +147,22 @@ namespace HitTextTweaker
                 marginField = AccessTools.Field(hitTextType, "hitMargin");
                 textField = AccessTools.Field(hitTextType, "text");
                 lastColorField = AccessTools.Field(hitTextType, "lastColor");
+                borderField = AccessTools.Field(hitTextType, "xPerfectBorder");
                 if (lastColorField == null) Log.Log("警告：找不到 scrHitTextMesh.lastColor，颜色自定义可能不生效");
+
+                try
+                {
+                    Type persistenceType = AccessTools.TypeByName("Persistence");
+                    if (persistenceType != null)
+                        presetProp = persistenceType.GetProperty("hitMarginPerfectText",
+                            BindingFlags.Public | BindingFlags.Static);
+                    if (presetProp == null) Log.Log("找不到 Persistence.hitMarginPerfectText，面板里的预设选择失效（换字仍按旧逻辑）");
+                }
+                catch (Exception e)
+                {
+                    Log.Log("读取 X完美判定文本 设置失败: " + e.Message);
+                }
+                ResolveLocalization();
 
                 var harmony = new Harmony("LittleBlueWhale.HitTextTweaker");
                 harmony.Patch(init, postfix: new HarmonyMethod(typeof(Main).GetMethod(
@@ -162,30 +199,67 @@ namespace HitTextTweaker
 
         public static void InitPostfix(object __instance)
         {
-            ApplyText(__instance);
-            ApplyColor(__instance);
+            Refresh(__instance);
         }
 
         // 判定飘字每次显示都会走 Show，这里再刷一次：改了字不用重开谱子，编辑器里也实时生效
         public static void ShowPostfix(object __instance)
         {
-            ApplyText(__instance);
-            ApplyColor(__instance);
+            Refresh(__instance);
         }
 
-        private static void ApplyText(object instance)
+        private static void Refresh(object instance)
         {
-            // 关掉 mod 后 patch 还挂着：先看开关状态，禁用时完全不碰文字
-            if (!enabled) return;
-            if (umiEntry != null && !umiEntry.Active) return;
+            // 合并判断必须在改字之前做：改完之后 text 已经是自定义内容，认不出是不是「完美！」了
+            string rawSlot;
+            string slot = ResolveSlot(instance, out rawSlot);
+            if (slot == null) return;
+            ApplyText(instance, slot, rawSlot);
+            ApplyColor(instance, slot, rawSlot);
+        }
+
+        // 当前这一档该用哪份文字：正常就是档位自己；被游戏的「X完美判定文本」合并成「完美！」时用合并档
+        private static string ResolveSlot(object instance, out string rawSlot)
+        {
+            rawSlot = null;
+            if (!enabled || instance == null || marginField == null) return null;
+            if (umiEntry != null && !umiEntry.Active) return null;
+
+            object margin;
+            try { margin = marginField.GetValue(instance); }
+            catch { return null; }
+            if (margin == null) return null;
+            rawSlot = margin.ToString();
+            if (!IsPerfectSlot(rawSlot)) return rawSlot;
+
+            if (locGet == null) return rawSlot;
+            TextMeshPro tmp = null;
+            try { if (textField != null) tmp = textField.GetValue(instance) as TextMeshPro; } catch { }
+            if (tmp == null) return rawSlot;
+
+            string plain = locPerfectPlain;
+            string own = GetLocalized("HitMargin." + rawSlot);
+            if (string.IsNullOrEmpty(plain) || string.IsNullOrEmpty(own) || own == plain) return rawSlot;
+            return StripTags(tmp.text) == plain ? CombinedSlot : rawSlot;
+        }
+
+        private static bool IsPerfectSlot(string slot)
+        {
+            return slot == "PerfectMinus" || slot == "XPerfect" || slot == "PerfectPlus";
+        }
+
+        private static string StripTags(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return "";
+            return Regex.Replace(s, "<[^>]*>", "").Trim();
+        }
+
+        private static void ApplyText(object instance, string slot, string rawSlot)
+        {
             try
             {
-                if (instance == null || marginField == null || textField == null) return;
+                if (instance == null || textField == null) return;
 
-                object margin = marginField.GetValue(instance);
-                if (margin == null) return;
-
-                string slot = margin.ToString();
                 string want;
                 if (!replacements.TryGetValue(slot, out want)) return;
                 if (string.IsNullOrEmpty(want)) return;
@@ -193,7 +267,7 @@ namespace HitTextTweaker
 
                 var tmp = textField.GetValue(instance) as TextMeshPro;
                 if (tmp == null) return;
-                if (tmp.text == want) return;
+                if (tmp.text == want) { SyncBorder(instance, want); return; }
 
                 tmp.overflowMode = TextOverflowModes.Overflow;
                 try
@@ -210,6 +284,7 @@ namespace HitTextTweaker
                 catch { }
 
                 tmp.text = want;
+                SyncBorder(instance, want);
                 if (appliedSlots.Add(slot) && Log != null)
                     Log.Log("文字替换已生效: " + slot + " -> " + want);
             }
@@ -219,22 +294,35 @@ namespace HitTextTweaker
             }
         }
 
-        // 颜色覆盖：Init 里游戏按档位从 RDConstants.hitMarginColours 取色写进 lastColor，
-        // Show 时又拿 lastColor 重新上色，所以两处都得改 lastColor + text.color 才真正生效。
-        private static void ApplyColor(object instance)
+        // X 完美的描边层是游戏在 Show 里照抄一份当时的 text，我们的 postfix 后跑，
+        // 所以换完字要顺手把它同步一遍，不然边框上还留着旧文案
+        private static void SyncBorder(object instance, string want)
         {
-            if (!enabled) return;
-            if (umiEntry != null && !umiEntry.Active) return;
+            if (borderField == null) return;
             try
             {
-                if (instance == null || marginField == null || textField == null || lastColorField == null) return;
+                var border = borderField.GetValue(instance) as TextMeshPro;
+                if (border != null && border.text != want) border.text = want;
+            }
+            catch { }
+        }
 
-                object margin = marginField.GetValue(instance);
-                if (margin == null) return;
+        // 颜色覆盖：Init 里游戏按档位从 RDConstants.hitMarginColours 取色写进 lastColor，
+        // Show 时又拿 lastColor 重新上色，所以两处都得改 lastColor + text.color 才真正生效。
+        private static void ApplyColor(object instance, string effSlot, string rawSlot)
+        {
+            try
+            {
+                if (instance == null || textField == null || lastColorField == null) return;
 
-                string slot = margin.ToString();
                 var tmp = textField.GetValue(instance) as TextMeshPro;
                 if (tmp == null) return;
+
+                // 合并档优先用它自己的配色；没配就退回当前判定档自己的颜色
+                string slot = effSlot;
+                if (slot != rawSlot
+                    && !colors.ContainsKey(slot) && !gradients.ContainsKey(slot) && !perChar.ContainsKey(slot))
+                    slot = rawSlot;
 
                 // 渐变优先：四角渐变打开时颜色由 colorGradient 决定
                 Color[] g;
@@ -493,6 +581,7 @@ namespace HitTextTweaker
                 string[] fieldNames = {
                     "colourTooEarly", "colourVeryEarly", "colourLittleEarly", "colourPerfect",
                     "colourXPerfect", "colourPerfect",
+                    "colourPerfect",
                     "colourLittleLate", "colourVeryLate", "colourTooLate",
                     "colourFail", "colourFail", "colourMultipress", "colourFail"
                 };
@@ -551,7 +640,27 @@ namespace HitTextTweaker
             {
                 GUILayout.Label("判定文字：改完立即生效（下一次判定就变），点「保存」写入 config.json，重启后保持。");
                 GUILayout.Label("文字框留空 = 该档位保持游戏原样；点「调色」展开 RGB(A) 滑条（0.00~1.00），默认值 = 游戏原色，想要纯白就填 1/1/1/1。");
-                GUILayout.Space(4f);
+                GUILayout.Space(6f);
+
+                GUILayout.BeginHorizontal();
+                GUILayout.Label("X完美判定文本", GUILayout.Width(170f));
+                int pv = GetPresetValue();
+                if (presetProp == null || pv < 0)
+                {
+                    GUILayout.Label("（当前游戏版本没有这个设置项）");
+                }
+                else
+                {
+                    if (GUILayout.Button("◀", GUILayout.Width(34f)))
+                        SetPresetValue((pv + PresetNames.Length - 1) % PresetNames.Length);
+                    GUILayout.Label(PresetNames[Mathf.Clamp(pv, 0, PresetNames.Length - 1)], GUILayout.Width(300f));
+                    if (GUILayout.Button("▶", GUILayout.Width(34f)))
+                        SetPresetValue((pv + 1) % PresetNames.Length);
+                }
+                GUILayout.EndHorizontal();
+                GUILayout.Label("跟游戏「设置」里的同名选项是同一个值：这里改游戏里也变，游戏里改这里也跟着变。");
+                GUILayout.Label("选合并类的预设时，三个完美档统一显示「完美！」，用下面「完美！合并时」那一行改它的字。");
+                GUILayout.Space(6f);
 
                 for (int i = 0; i < Slots.Length; i++)
                 {
@@ -671,6 +780,76 @@ namespace HitTextTweaker
             any |= MigrateLegacy(perChar, targets);
             if (any && Log != null)
                 Log.Log("旧配置里的 Perfect 已迁移到 PerfectMinus / XPerfect / PerfectPlus（点「保存」会写成新档位）");
+        }
+
+        // 新加的合并档：没有配置就从 XPerfect 拷一份，保证老用户选「仅完美」时还是自己那套字
+        private static void MigrateCombinedPerfect()
+        {
+            if (replacements.ContainsKey(CombinedSlot)) return;
+            string text;
+            if (!replacements.TryGetValue("XPerfect", out text) || string.IsNullOrEmpty(text)) return;
+            replacements[CombinedSlot] = text;
+            Color c;
+            if (colors.TryGetValue("XPerfect", out c)) colors[CombinedSlot] = c;
+            if (Log != null) Log.Log("已把 XPerfect 的文字复制到合并档 PerfectCombined（「仅完美」等预设会用它）");
+        }
+
+        // ---------- 「X完美判定文本」预设 ----------
+
+        private static void ResolveLocalization()
+        {
+            try
+            {
+                Type rdStringType = AccessTools.TypeByName("RDString");
+                if (rdStringType == null) return;
+                locGet = rdStringType.GetMethod("Get",
+                    BindingFlags.Public | BindingFlags.Static,
+                    null,
+                    new Type[] { typeof(string), typeof(Dictionary<string, object>) },
+                    null);
+                if (locGet == null) return;
+                locPerfectPlain = GetLocalized("HitMargin.Perfect");
+            }
+            catch (Exception e)
+            {
+                if (Log != null) Log.Log("本地化接口不可用（合并判断会退回旧行为）: " + e.Message);
+            }
+        }
+
+        private static string GetLocalized(string key)
+        {
+            if (locGet == null) return null;
+            try { return locGet.Invoke(null, new object[] { key, null }) as string; }
+            catch { return null; }
+        }
+
+        // 返回 -1 表示这个游戏版本没有该设置项
+        private static int GetPresetValue()
+        {
+            if (presetProp == null) return -1;
+            try
+            {
+                object v = presetProp.GetValue(null);
+                return v == null ? -1 : Convert.ToInt32(v);
+            }
+            catch { return -1; }
+        }
+
+        // 直接改游戏自己的设置值：面板和「设置」菜单看到的是同一个数
+        private static void SetPresetValue(int value)
+        {
+            if (presetProp == null) return;
+            try
+            {
+                presetProp.SetValue(null, Enum.ToObject(presetProp.PropertyType, value));
+                int now = GetPresetValue();
+                if (Log != null)
+                    Log.Log("X完美判定文本 -> " + (now >= 0 && now < PresetNames.Length ? PresetNames[now] : "?"));
+            }
+            catch (Exception e)
+            {
+                if (Log != null) Log.Log("改 X完美判定文本 失败: " + e.Message);
+            }
         }
 
         private static bool MigrateLegacy<T>(Dictionary<string, T> dict, string[] targets)
