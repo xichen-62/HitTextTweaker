@@ -139,6 +139,14 @@ namespace HitTextTweaker
         private static readonly Dictionary<int, float> baseMainFont = new Dictionary<int, float>();
         private static readonly Dictionary<int, float> baseBorderFont = new Dictionary<int, float>();
 
+        // X 完美的光效（粒子）是游戏在 Show 里按「判定文字大小」设置生成的点大小/扩散速度，
+        // 跟这一档到底写了多少字毫无关系 —— 长句就是「字铺开了、光效还挤在中间」。
+        // 这里在 Show 执行期间截 RDUtils.WithMinMaxConstant，把粒子的尺寸和扩散按最终字宽放大。
+        private static object glowInstance;
+        private static float glowRatio = -1f;
+        private static int glowCall;
+        private static readonly HashSet<string> glowLogged = new HashSet<string>();
+
         // UMM 开关状态：关掉 mod 时 Harmony patch 仍然挂着，必须靠这两个标志跳过替换
         private static bool enabled = true;
         private static UnityModManager.ModEntry umiEntry;
@@ -219,6 +227,29 @@ namespace HitTextTweaker
                 harmony.Patch(show, postfix: new HarmonyMethod(typeof(Main).GetMethod(
                     "ShowPostfix", BindingFlags.Static | BindingFlags.Public)));
 
+                // X 完美光效补偿：Show 里撒粒子那几个 WithMinMaxConstant 调用，趁 Show 还没跑完把参数按字宽放大
+                try
+                {
+                    Type rduType = AccessTools.TypeByName("RDUtils");
+                    MethodInfo wmmc = rduType != null ? AccessTools.Method(rduType, "WithMinMaxConstant") : null;
+                    if (wmmc != null)
+                    {
+                        harmony.Patch(show, prefix: new HarmonyMethod(typeof(Main).GetMethod(
+                            "ShowPrefix", BindingFlags.Static | BindingFlags.Public)));
+                        harmony.Patch(wmmc, prefix: new HarmonyMethod(typeof(Main).GetMethod(
+                            "MinMaxPrefix", BindingFlags.Static | BindingFlags.Public)));
+                        Log.Log("已挂接 X完美光效补偿（粒子按字宽放大）");
+                    }
+                    else
+                    {
+                        Log.Log("找不到 RDUtils.WithMinMaxConstant，X完美光效不会跟着字宽放大");
+                    }
+                }
+                catch (Exception e)
+                {
+                    Log.Log("X完美光效补偿挂接失败: " + e.Message);
+                }
+
                 umiEntry = modEntry;
                 enabled = modEntry.Active;
                 modEntry.OnGUI = OnGUI;
@@ -255,6 +286,66 @@ namespace HitTextTweaker
         public static void ShowPostfix(object __instance)
         {
             Refresh(__instance);
+            glowInstance = null;
+        }
+
+        // Show 一开始就把实例记下来：撒粒子发生在 Show 内部，那时还没轮到我们的 postfix
+        public static void ShowPrefix(object __instance)
+        {
+            glowInstance = __instance;
+            glowRatio = -1f;
+            glowCall = 0;
+        }
+
+        // RDUtils.WithMinMaxConstant(curve, min, max) 在 Show 里被调四次：
+        // 前两次是粒子 startSize（1×V ~ 2×V），后两次是扩散速度（±3.5×V）。
+        public static void MinMaxPrefix(object[] __args)
+        {
+            if (glowInstance == null || !enabled) return;
+            if (__args == null || __args.Length < 3) return;
+            int idx = glowCall++;
+            float ratio = GlowRatio();
+            if (ratio <= 1.001f) return;
+            float sizeFactor = Mathf.Sqrt(ratio);
+            float factor = idx < 2 ? sizeFactor : ratio;
+            try
+            {
+                __args[1] = Convert.ToSingle(__args[1]) * factor;
+                __args[2] = Convert.ToSingle(__args[2]) * factor;
+                string lk = idx + "|" + Mathf.RoundToInt(ratio * 10f);
+                if (glowLogged.Add(lk) && Log != null)
+                    Log.Log("X完美光效补偿: 字宽 " + ratio.ToString("F2") + "x -> 粒子尺寸 x"
+                            + sizeFactor.ToString("F2") + "，扩散 x" + ratio.ToString("F2"));
+            }
+            catch { }
+        }
+
+        // 这一档最终会显示多宽（跟 ApplyFontFit 缩完之后的宽度对齐），比游戏原字宽大多少倍
+        private static float GlowRatio()
+        {
+            if (glowRatio >= 0f) return glowRatio;
+            glowRatio = 1f;
+            try
+            {
+                if (glowInstance == null || marginField == null || textField == null) return glowRatio;
+                object m = marginField.GetValue(glowInstance);
+                string slot = m != null ? m.ToString() : null;
+                if (string.IsNullOrEmpty(slot)) return glowRatio;
+                string want;
+                if (!replacements.TryGetValue(slot, out want) || string.IsNullOrEmpty(want)) return glowRatio;
+                var tmp = textField.GetValue(glowInstance) as TextMeshPro;
+                if (tmp == null) return glowRatio;
+                string plain = StripTags(want);
+                string orig = StripTags(DefaultText(slot));
+                if (plain.Length == 0 || orig.Length == 0) return glowRatio;
+                float w0 = tmp.GetPreferredValues(orig).x;
+                float w1 = tmp.GetPreferredValues(plain).x;
+                if (w0 <= 0.01f || w1 <= 0.01f) return glowRatio;
+                float shown = autoFit ? Mathf.Min(w1, w0 * autoFitWidth) : w1;
+                glowRatio = Mathf.Clamp(shown / w0, 1f, 6f);
+            }
+            catch { }
+            return glowRatio;
         }
 
         private static void Refresh(object instance)
