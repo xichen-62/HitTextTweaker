@@ -313,7 +313,17 @@ namespace HitTextTweaker
 
                 string want;
                 if (!replacements.TryGetValue(slot, out want)) return;
-                if (string.IsNullOrEmpty(want)) return;
+                if (want == null) return;
+                if (want.Length == 0)
+                {
+                    // 框里一个字都没有 = 这一档什么都不显示（跟「留空就是游戏原样」不是一回事）
+                    var blank = textField.GetValue(instance) as TextMeshPro;
+                    if (blank != null && blank.text != "") blank.text = "";
+                    SyncBorder(instance, "");
+                    if (appliedSlots.Add(slot) && Log != null)
+                        Log.Log("文字已清空（这一档不显示任何字）: " + slot);
+                    return;
+                }
                 want = WrapGradient(want, slot);
 
                 var tmp = textField.GetValue(instance) as TextMeshPro;
@@ -753,7 +763,7 @@ namespace HitTextTweaker
             {
                 string sigBefore = ConfigSignature();
                 GUILayout.Label("判定文字：改完立即生效（下一次判定就变），改完自动写入 config.json，重启后保持。");
-                GUILayout.Label("文字框留空 = 该档位保持游戏原样；点「调色」展开 RGB(A) 滑条（0.00~1.00），默认值 = 游戏原色，想要纯白就填 1/1/1/1。");
+                GUILayout.Label("文字框默认显示游戏自己的文本；把字全删掉 = 这一档什么都不显示；点「恢复默认」回到游戏原样。点「调色」展开 RGB(A) 滑条（0.00~1.00），默认值 = 游戏原色，想要纯白就填 1/1/1/1。");
                 GUILayout.Space(6f);
 
                 GUILayout.BeginHorizontal();
@@ -779,8 +789,10 @@ namespace HitTextTweaker
                 for (int i = 0; i < Slots.Length; i++)
                 {
                     string slot = Slots[i];
+                    string def = DefaultText(slot);
                     string current;
-                    if (!replacements.TryGetValue(slot, out current)) current = "";
+                    if (!replacements.TryGetValue(slot, out current)) current = def;
+                    if (current == null) current = "";
 
                     bool active = SlotActive(slot);
                     bool prevEnabled = GUI.enabled;
@@ -792,7 +804,8 @@ namespace HitTextTweaker
                     string v = GUILayout.TextField(current, GUILayout.Width(160f));
                     if (v != current)
                     {
-                        if (string.IsNullOrEmpty(v)) replacements.Remove(slot);
+                        // 跟游戏默认文本一样就当没改（不写配置）；删到空字符串才是「什么都不显示」
+                        if (v == def) replacements.Remove(slot);
                         else replacements[slot] = v;
                     }
 
@@ -806,10 +819,14 @@ namespace HitTextTweaker
                         colorOpen[slot] = !open;
                         open = !open;
                     }
-                    if (GUILayout.Button("清空", GUILayout.Width(64f)))
+                    if (GUILayout.Button("恢复默认", GUILayout.Width(72f)))
                     {
                         replacements.Remove(slot);
                         colors.Remove(slot);
+                        gradients.Remove(slot);
+                        gradStash.Remove(slot);
+                        gradientModes.Remove(slot);
+                        perChar.Remove(slot);
                         colorOpen[slot] = false;
                         open = false;
                     }
@@ -850,7 +867,8 @@ namespace HitTextTweaker
                 for (int i = 0; i < Slots.Length; i++)
                 {
                     string v;
-                    if (!replacements.TryGetValue(Slots[i], out v) || string.IsNullOrEmpty(v)) continue;
+                    if (!replacements.TryGetValue(Slots[i], out v) || v == null) continue;
+                    // 空字符串是显式配置：表示这一档不显示任何字，必须写进去
                     sb.Append("  \"").Append(Slots[i]).Append("\": \"").Append(JsonEscape(v)).Append("\",\n");
                 }
                 for (int i = 0; i < Slots.Length; i++)
@@ -990,6 +1008,32 @@ namespace HitTextTweaker
             catch { return null; }
         }
 
+        // 这一档游戏自己会显示的文本（面板里默认就填它）；取不到本地化时用内置简中兜底
+        private static string DefaultText(string slot)
+        {
+            string key = slot == CombinedSlot ? "HitMargin.Perfect" : "HitMargin." + slot;
+            string s = GetLocalized(key);
+            if (!string.IsNullOrEmpty(s)) return s;
+            switch (slot)
+            {
+                case "TooEarly": return "太快！！";
+                case "VeryEarly": return "太快！";
+                case "EarlyPerfect": return "稍快！";
+                case "PerfectMinus": return "-完美！";
+                case "XPerfect": return "X完美！";
+                case "PerfectPlus": return "完美！+";
+                case "PerfectCombined": return "完美！";
+                case "LatePerfect": return "稍慢！";
+                case "VeryLate": return "太慢！";
+                case "TooLate": return "太慢！！";
+                case "FailMiss": return "失误……";
+                case "FailOverload": return "按太快……";
+                case "Multipress": return "多次按键！！";
+                case "OverPress": return "无法再快！！";
+            }
+            return "";
+        }
+
         // 返回 -1 表示这个游戏版本没有该设置项
         private static int GetPresetValue()
         {
@@ -1104,7 +1148,6 @@ namespace HitTextTweaker
                     string key = m.Groups[1].Value;
                     if (key == "__comment") continue;
                     string val = Regex.Replace(m.Groups[2].Value, "\\\\(.)", "$1");
-                    if (string.IsNullOrEmpty(val)) continue;
                     if (key.StartsWith("Color_", StringComparison.OrdinalIgnoreCase))
                     {
                         Color c;
