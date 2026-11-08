@@ -1074,6 +1074,7 @@ namespace HitTextTweaker
                 object refresh = Enum.ToObject(updateSettingMethod.GetParameters()[1].ParameterType, 0);
                 UnityEngine.Object[] menus = Resources.FindObjectsOfTypeAll(settingsMenuType);
                 int touched = 0;
+                int failed = 0;
                 foreach (UnityEngine.Object menu in menus)
                 {
                     MonoBehaviour mb = menu as MonoBehaviour;
@@ -1084,14 +1085,24 @@ namespace HitTextTweaker
                     {
                         if (btn == null) continue;
                         if (!"hitMarginPerfectText".Equals(settingTypeField.GetValue(btn) as string)) continue;
-                        updateSettingMethod.Invoke(menu, new object[] { btn, refresh });
+                        // 先把这一行的字写好：就算游戏自己的刷新在菜单没打开时抛异常，文案也已经对了
                         WriteValueLabel(btn);
+                        try
+                        {
+                            updateSettingMethod.Invoke(menu, new object[] { btn, refresh });
+                        }
+                        catch (Exception ex)
+                        {
+                            failed++;
+                            Exception inner = ex.InnerException != null ? ex.InnerException : ex;
+                            if (Log != null) Log.Log("游戏设置页自刷新跳过（文字已直接写入）: " + inner.GetType().Name + ": " + inner.Message);
+                        }
                         touched++;
                     }
                 }
                 int pv = GetPresetValue();
                 string shown = pv >= 0 && pv < PresetNames.Length ? PresetNames[pv] : "?";
-                if (Log != null) Log.Log("已同步游戏设置页 -> " + shown + "（命中 " + touched + " 处）");
+                if (Log != null) Log.Log("已同步游戏设置页 -> " + shown + "（命中 " + touched + " 处" + (failed > 0 ? "，跳过自刷新 " + failed + " 次" : "") + "）");
             }
             catch (Exception e)
             {
