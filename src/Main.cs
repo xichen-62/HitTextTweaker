@@ -71,6 +71,7 @@ namespace HitTextTweaker
         private static MethodInfo updateSettingMethod;
         private static PropertyInfo currentSettingsProp;
         private static FieldInfo settingTypeField;
+        private static FieldInfo valueLabelField;      // PauseSettingButton.valueLabel（那一行右侧显示的值）
         private static string locPerfectPlain;         // 「完美！」的当前语言文本
 
         private static readonly string[] PresetNames = {
@@ -80,6 +81,16 @@ namespace HitTextTweaker
             "X完美",
             "X完美（无粒子）",
             "-完美！+"
+        };
+
+        // 与上面一一对应，游戏本地化键 pauseMenu.settings.HitMarginPerfectTextPreset.<成员名>
+        private static readonly string[] PresetEnumNames = {
+            "Default",
+            "ShowXPerfectWithParticleAndSignedPerfects",
+            "ShowXPerfectAndSignedPerfects",
+            "ShowXPerfectWithParticle",
+            "ShowXPerfect",
+            "ShowSignedPerfects"
         };
 
         // 每档判定文字的颜色（留空 = 游戏原色）
@@ -175,11 +186,17 @@ namespace HitTextTweaker
                 {
                     updateSettingMethod = settingsMenuType.GetMethod("UpdateSetting",
                         BindingFlags.Public | BindingFlags.Instance);
+                    // currentSettings 是 private 属性，漏了 NonPublic 就会默默返回 null，同步永远不生效
                     currentSettingsProp = settingsMenuType.GetProperty("currentSettings",
-                        BindingFlags.Public | BindingFlags.Instance);
+                        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
                     Type psbType = AccessTools.TypeByName("PauseSettingButton");
                     if (psbType != null)
+                    {
                         settingTypeField = psbType.GetField("type", BindingFlags.Public | BindingFlags.Instance);
+                        valueLabelField = psbType.GetField("valueLabel", BindingFlags.Public | BindingFlags.Instance);
+                    }
+                    if (updateSettingMethod == null || currentSettingsProp == null)
+                        Log.Log("找不到 SettingsMenu.UpdateSetting / currentSettings，面板改动无法同步到游戏设置页");
                 }
 
                 var harmony = new Harmony("LittleBlueWhale.HitTextTweaker");
@@ -894,15 +911,13 @@ namespace HitTextTweaker
                 || currentSettingsProp == null || settingTypeField == null) return;
             try
             {
+                object refresh = Enum.ToObject(updateSettingMethod.GetParameters()[1].ParameterType, 0);
                 UnityEngine.Object[] menus = Resources.FindObjectsOfTypeAll(settingsMenuType);
-                ParameterInfo[] pars = updateSettingMethod.GetParameters();
-                if (pars.Length != 2) return;
-                object refresh = Enum.ToObject(pars[1].ParameterType, 0);
-
+                int touched = 0;
                 foreach (UnityEngine.Object menu in menus)
                 {
                     MonoBehaviour mb = menu as MonoBehaviour;
-                    if (mb == null || !mb.gameObject.activeInHierarchy) continue;
+                    if (mb == null) continue;
                     System.Collections.IList list = currentSettingsProp.GetValue(menu) as System.Collections.IList;
                     if (list == null) continue;
                     foreach (object btn in list)
@@ -910,14 +925,39 @@ namespace HitTextTweaker
                         if (btn == null) continue;
                         if (!"hitMarginPerfectText".Equals(settingTypeField.GetValue(btn) as string)) continue;
                         updateSettingMethod.Invoke(menu, new object[] { btn, refresh });
-                        return;
+                        WriteValueLabel(btn);
+                        touched++;
                     }
                 }
+                int pv = GetPresetValue();
+                string shown = pv >= 0 && pv < PresetNames.Length ? PresetNames[pv] : "?";
+                if (Log != null) Log.Log("已同步游戏设置页 -> " + shown + "（命中 " + touched + " 处）");
             }
             catch (Exception e)
             {
                 if (Log != null) Log.Log("同步游戏设置界面失败: " + e.Message);
             }
+        }
+
+        // 游戏那一行是按 RDString 键 pauseMenu.settings.<枚举>.<成员名> 取字的；这里直接补写一遍，
+        // 就算设置页没被重建（不在暂停菜单里）也不会留旧文案
+        private static void WriteValueLabel(object btn)
+        {
+            if (valueLabelField == null || locGet == null) return;
+            int pv = GetPresetValue();
+            if (pv < 0 || pv >= PresetNames.Length) return;
+            UnityEngine.UI.Text label = valueLabelField.GetValue(btn) as UnityEngine.UI.Text;
+            if (label == null) return;
+            string text = null;
+            try
+            {
+                text = locGet.Invoke(null, new object[] {
+                    "pauseMenu.settings.HitMarginPerfectTextPreset." + PresetEnumNames[pv], null }) as string;
+            }
+            catch { text = null; }
+            if (!string.IsNullOrEmpty(text) && text.IndexOf("pauseMenu.settings.", StringComparison.Ordinal) >= 0)
+                text = null;
+            label.text = string.IsNullOrEmpty(text) ? PresetNames[pv] : text;
         }
 
         private static bool MigrateLegacy<T>(Dictionary<string, T> dict, string[] targets)
